@@ -2,7 +2,7 @@
 const http = require('http'), fs = require('fs'), path = require('path'), crypto = require('crypto'), os = require('os');
 const PORT = process.env.PORT || 3000;
 const PUB = path.join(__dirname, 'public');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml' };
 
 // ---------------- 遊戲資料 ----------------
 const SCENES = [
@@ -81,6 +81,9 @@ const rnd = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const scenes = SCENES.map(d => ({ ...d, active: false, ents: [], items: [], fx: [] }));
 const players = new Map();
+// 斷線的玩家先保留 3 分鐘：同一支手機重連時找回錢、能力與所在街道
+const ghosts = new Map(), GHOST_MS = 180000;
+setInterval(() => { const now = Date.now(); for (const [k, g] of ghosts) if (now - g.at > GHOST_MS) ghosts.delete(k); }, 30000);
 
 function mkEnt(o) {
   return Object.assign({ id: nextId++, x: 0, z: 30, y: 0, vx: 0, vz: 0, vy: 0, f: 1, t: 0, state: 'idle', hp: 50, mx: 50,
@@ -459,8 +462,11 @@ function onMsg(p, raw) {
     const v = MAX.map((mx, i) => { const n = L[i] | 0; return n >= 0 && n < mx ? n : 0; });
     p.pal = v[0]; p.lk = v.slice(1).join(',');
     p.joined = true;
-    enterScene(p, START, 384 + rnd(-40, 40));
-    p.z = rnd(20, 50);
+    p.tok = String(m.tok || '').slice(0, 40);
+    const g = p.tok && ghosts.get(p.tok);
+    if (g) { ghosts.delete(p.tok); Object.assign(p, { money: g.money, atk: g.atk, def: g.def, spd: g.spd, mx: g.mx, hp: Math.max(1, g.hp) }); }
+    enterScene(p, g ? g.sc : START, g ? g.x : 384 + rnd(-40, 40));
+    p.z = g ? g.z : rnd(20, 50);
     send(p, { t: 'welcome', id: p.id, lay: scenes.map(S => ({ b: S.build, roofs: S.roofs })), zr: ZR });
   } else if (m.t === 'in') {
     const b = m.k | 0;
@@ -480,6 +486,7 @@ function send(p, obj) { if (p.sock && !p.sock.destroyed && p.sock.writable) p.so
 
 const server = http.createServer((req, res) => {
   let u = decodeURIComponent(req.url.split('?')[0]);
+  if (u === '/health') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok'); }
   if (u === '/') u = '/index.html';
   const f = path.join(PUB, path.normalize(u));
   if (!f.startsWith(PUB)) { res.writeHead(403); return res.end(); }
@@ -516,7 +523,7 @@ server.on('upgrade', (req, sock) => {
       if (op === 1) onMsg(p, pl.toString());
     }
   });
-  const bye = () => { if (players.has(p.id)) { if (p.joined && p.scene) dropHold(p, p.scene); players.delete(p.id); } };
+  const bye = () => { if (players.has(p.id)) { if (p.joined && p.scene) { dropHold(p, p.scene); if (p.tok && p.state !== 'dead') ghosts.set(p.tok, { money: p.money, atk: p.atk, def: p.def, spd: p.spd, mx: p.mx, hp: p.hp, sc: p.scene.idx, x: p.x, z: p.z, at: Date.now() }); } players.delete(p.id); } };
   sock.on('close', bye); sock.on('error', bye);
 });
 server.listen(PORT, () => {

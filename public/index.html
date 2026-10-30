@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="江戶亂鬥">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <title>江戶亂鬥傳</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet">
@@ -75,6 +82,13 @@ body.touch.land #pad>*{pointer-events:auto}
 #opts .v{text-align:center}
 #opts button{font-size:14px;padding:0;width:26px;height:26px;background:#3c2c1c;color:#fff;border:1px solid #bcbcbc;cursor:pointer}
 #lobby{overflow-y:auto}
+#net{position:absolute;left:50%;top:40%;transform:translate(-50%,-50%);background:#000;border:2px solid #f8b800;color:#f8b800;padding:8px 16px;font-size:15px;z-index:5;white-space:nowrap}
+#net[hidden]{display:none}
+#install{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:13px;color:#bcbcbc;max-width:380px}
+#install[hidden],#install [hidden]{display:none}
+#lobby #installBtn{font-size:16px;background:#3c2c1c;border:2px solid #f8b800;color:#f8b800;padding:4px 18px}
+#app{padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);box-sizing:border-box}
+body.touch.land #pad{padding-left:calc(28px + env(safe-area-inset-left));padding-right:calc(28px + env(safe-area-inset-right))}
 #lobby .err{color:#f87858;min-height:1em}
 </style>
 </head>
@@ -95,6 +109,7 @@ body.touch.land #pad>*{pointer-events:auto}
     <canvas id="cv" width="256" height="192"></canvas>
     <div id="banner"></div>
     <div id="toast"></div>
+    <div id="net" hidden></div>
     <div id="shop" hidden></div>
   </div>
   <div id="pad">
@@ -108,6 +123,7 @@ body.touch.land #pad>*{pointer-events:auto}
   <input id="nameIn" maxlength="8" placeholder="輸入名字" autocomplete="off">
   <div id="custom"><canvas id="pv" width="64" height="72"></canvas><div id="opts"></div></div>
   <button id="startBtn">出 陣</button>
+  <div id="install" hidden><button id="installBtn" hidden>安裝成 App</button><span id="iosHint" hidden>iPhone：點 Safari 下方的「分享」→「加入主畫面」，就能像 App 一樣全螢幕開啟</span></div>
   <div class="err" id="err"></div>
   <div class="help">
     <table class="keys">
@@ -848,10 +864,22 @@ function drawChar(c, sx, sy, e, tick) {
 // ================= 網路 =================
 let ws = null, joined = false, myId = 0, sceneIdx = 2, snap = null, prevPos = new Map(), snapT = 0, camX = 0, stats = null, online = 0;
 const sparks = [], debris = [], specials = []; let shake = 0, flash = 0;
+// 斷線自動重連：同一支裝置用固定代號，伺服器會找回錢、能力與所在街道
+let playing = false, myName = '', retry = 0, retryT = 0;
+const TOK = (() => { try { let t = localStorage.getItem('edo-tok'); if (!t) { t = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('edo-tok', t); } return t; } catch (e) { return Math.random().toString(36).slice(2); } })();
+function netMsg(s) { $('net').textContent = s || ''; $('net').hidden = !s; }
+function reconnect() {
+  clearTimeout(retryT);
+  if (!playing || (ws && ws.readyState <= 1)) return;
+  netMsg('連線中斷，重新連線中…'); $('err').textContent = '重新連線中…';
+  retryT = setTimeout(() => connect(myName), Math.min(8000, 800 * 2 ** retry++));
+}
+addEventListener('online', reconnect);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) reconnect(); });
 function connect(name) {
   const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
   ws = new WebSocket(url);
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name, look: LOOK }));
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name, look: LOOK, tok: TOK }));
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
     if (m.t === 's') {
@@ -861,12 +889,12 @@ function connect(name) {
       for (const f of m.fx) { if (f.k === 'hit') { sparks.push({ x: f.x, z: f.z, y: f.y, l: 10 }); shake = Math.max(shake, 3); } if (f.k === 'ko') shake = 7; if (f.k === 'special') { flash = 6; specials.push({ x: f.x, z: f.z, l: 50 }); shake = 5; } if (f.k === 'break') for (let n = 0; n < 8; n++) debris.push({ x: f.x, z: f.z, y: f.y, vx: (Math.random() - 0.5) * 4, vy: 1 + Math.random() * 3, l: 30, c: n % 2 ? '#b46c24' : '#5c2c08' }); (SFX[f.k] || (() => {}))(); }
       updHud();
     } else if (m.t === 'enter') { sceneIdx = m.sc; snap = null; camSnap = true; showBanner(m.sc); closeShop(); }
-    else if (m.t === 'welcome') { LAY = m.lay; ZR = m.zr; buildAll(); joined = true; $('lobby').style.display = 'none'; }
+    else if (m.t === 'welcome') { LAY = m.lay; ZR = m.zr; buildAll(); joined = true; retry = 0; netMsg(''); $('lobby').style.display = 'none'; }
     else if (m.t === 'shop') openShop(m.id);
     else if (m.t === 'msg') { toast(m.m); SFX.no(); }
     else if (m.t === 'bought') { const it = Object.values(SHOPS).flatMap(s => s.list).find(l => l[0] === m.id); toast('買了「' + (it ? it[1] : m.id) + '」'); SFX.buy(); }
   };
-  ws.onclose = () => { joined = false; $('lobby').style.display = 'flex'; $('err').textContent = '連線中斷，請重新出陣'; };
+  ws.onclose = () => { joined = false; if (playing) reconnect(); else { $('lobby').style.display = 'flex'; $('err').textContent = '無法連線，請確認網路後再出陣'; } };
 }
 let camSnap = true;
 function lerpPos(e) {
@@ -878,8 +906,15 @@ $('startBtn').onclick = () => {
   audio(); try { localStorage.setItem('edo-look', JSON.stringify(LOOK)); } catch (e) {}
   const nm = $('nameIn').value.trim() || '浪士' + (Math.random() * 90 + 10 | 0);
   try { localStorage.setItem('edo-name', nm); } catch (e) {}
+  myName = nm;
+  if (isTouch) { // 手機：嘗試全螢幕並鎖定橫向（不支援的瀏覽器會略過）
+    try { const r = document.documentElement.requestFullscreen && document.documentElement.requestFullscreen(); if (r) r.then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape')).catch(() => {}); } catch (e) {}
+  }
+  // 先叫醒伺服器（免費主機休眠時約需 1 分鐘）
   $('err').textContent = '連線中…';
-  connect(nm);
+  const slow = setTimeout(() => { $('err').textContent = '伺服器喚醒中，約需 1 分鐘，請稍候…'; }, 2500);
+  fetch('/health', { cache: 'no-store' }).then(() => { clearTimeout(slow); playing = true; connect(nm); })
+    .catch(() => { clearTimeout(slow); $('err').textContent = '無法連線，請確認網路後再出陣'; });
 };
 try { $('nameIn').value = localStorage.getItem('edo-name') || ''; } catch (e) {}
 $('nameIn').addEventListener('keydown', e => { if (e.key === 'Enter') $('startBtn').click(); e.stopPropagation(); });
@@ -1066,6 +1101,15 @@ setInterval(() => {
   pc.fillStyle = '#c8905c'; pc.fillRect(0, 0, 64, 72); pc.fillStyle = '#a06c3c'; pc.fillRect(0, 62, 64, 10);
   drawChar(pc, 30, 66, { k: 'p' + LOOK[0], i: 0, lk: LOOK.slice(1).join(','), s: ['idle', 'walk', 'run'][ph], t: 0, f: 1 }, t);
 }, 50);
+
+// ================= PWA：離線快取、安裝成 App =================
+if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+const standalone = matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches || navigator.standalone;
+let installEvt = null;
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (!standalone) { $('install').hidden = false; $('installBtn').hidden = false; } });
+$('installBtn').onclick = async () => { if (!installEvt) return; installEvt.prompt(); await installEvt.userChoice.catch(() => {}); installEvt = null; $('install').hidden = true; };
+addEventListener('appinstalled', () => { $('install').hidden = true; });
+if (/iPhone|iPad|iPod/.test(navigator.userAgent) && !standalone) { $('install').hidden = false; $('iosHint').hidden = false; }
 </script>
 </body>
 </html>
